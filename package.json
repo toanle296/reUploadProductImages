@@ -1,0 +1,34 @@
+{
+  "name": "csv-to-dospaces",
+  "version": "1.0.0",
+  "description": "Process WooCommerce CSV: add metadata to images, upload to DigitalOcean Spaces, and export new CSV.",
+  "main": "process_csv_to_spaces.js",
+  "scripts": {
+    "start": "node process_csv_to_spaces.js sample-testgpt.csv output.csv"
+  },
+  "dependencies": {
+    "async-mutex": "^0.5.0",
+    "csv-parse": "^5.5.0",
+    "csv-stringify": "^6.5.0",
+    "dayjs": "^1.11.10",
+    "dotenv": "^16.4.5",
+    "exiftool-vendored": "^28.3.0",
+    "node-fetch": "^2.7.0",
+    "p-limit": "^4.0.0",
+    "sharp": "^0.33.3",
+    "aws-sdk": "^2.1692.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "woocommerce",
+    "digitalocean-spaces",
+    "csv",
+    "image-metadata",
+    "sharp",
+    "exif"
+  ],
+  "author": "you",
+  "license": "MIT"
+}
