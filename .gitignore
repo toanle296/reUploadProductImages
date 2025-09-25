@@ -4,3 +4,5 @@
 /inputs
 /outputs
 /processed_imgs
+/tmp_imgs
+.env
