@@ -5,7 +5,7 @@ const path = require("path");
 
 const MAX_CONCURRENT_UPLOADS = 30; // giữ nguyên
 
-async function uploadToS3(filePath, bucketName, region, accessKey, secretKey, endpointUrl, s3Folder = "") {
+async function uploadToS3(filePath, bucketName, region, accessKey, secretKey, endpointUrl, s3Folder = "", author = "") {
   try {
     const s3 = new AWS.S3({
       region,
@@ -28,7 +28,12 @@ async function uploadToS3(filePath, bucketName, region, accessKey, secretKey, en
     };
     const contentType = mimeTypes[fileExtension] || "application/octet-stream";
 
-    const key = s3Folder ? `${s3Folder.replace(/\/+$/,'')}/${fileName}` : fileName;
+	// Thêm AUTHOR_DEFAULT trước khi tạo key
+	const nameWithoutExt = path.basename(fileName, fileExtension);
+	const fileNameWithAuthor = `${nameWithoutExt}-${process.env.META_AUTHOR || "unknown"}${fileExtension}`;
+
+	const key = s3Folder ? `${s3Folder.replace(/\/+$/,'')}/${fileNameWithAuthor}` : fileNameWithAuthor;
+ 
 
     await s3
       .upload({
