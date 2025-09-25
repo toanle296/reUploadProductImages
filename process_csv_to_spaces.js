@@ -165,7 +165,8 @@ async function processOneImage(originalUrl, productTitle, indexInProduct = 0) {
     ACCESS_KEY,
     SECRET_KEY,
     ENDPOINT,
-    S3_FOLDER
+    S3_FOLDER,
+	author
   );
 
   if (!uploadedUrl) throw new Error(`Upload failed for ${jpgPath}`);
