@@ -28,12 +28,20 @@ async function uploadToS3(filePath, bucketName, region, accessKey, secretKey, en
     };
     const contentType = mimeTypes[fileExtension] || "application/octet-stream";
 
-	// Thêm AUTHOR_DEFAULT trước khi tạo key
-	const nameWithoutExt = path.basename(fileName, fileExtension);
-	const fileNameWithAuthor = `${nameWithoutExt}-${process.env.META_AUTHOR || "unknown"}${fileExtension}`;
+    // Thêm AUTHOR_DEFAULT trước khi tạo key
+    const nameWithoutExt = path.basename(fileName, fileExtension);
+    // const fileNameWithAuthor = `${nameWithoutExt}-${process.env.META_AUTHOR || "unknown"}${fileExtension}`;
 
-	const key = s3Folder ? `${s3Folder.replace(/\/+$/,'')}/${fileNameWithAuthor}` : fileNameWithAuthor;
- 
+    // ✅ Nếu IMG_NAME_WITH_AUTHOR = "true" thì mới thêm author
+    let fileNameFinal;
+    if (process.env.IMG_NAME_WITH_AUTHOR === "true") {
+      fileNameFinal = `${nameWithoutExt}-${process.env.META_AUTHOR || "unknown"}${fileExtension}`;
+    } else {
+      fileNameFinal = fileName; // giữ nguyên tên gốc
+    }
+
+    const key = s3Folder ? `${s3Folder.replace(/\/+$/, '')}/${fileNameFinal}` : fileNameFinal;
+
 
     await s3
       .upload({
@@ -46,7 +54,7 @@ async function uploadToS3(filePath, bucketName, region, accessKey, secretKey, en
       .promise();
 
     // ✅ Trả URL có kèm folder (nếu có)
-    return `${endpointUrl.replace(/\/+$/,'')}/${bucketName}/${key}`;
+    return `${endpointUrl.replace(/\/+$/, '')}/${bucketName}/${key}`;
   } catch (error) {
     console.error(`❌ Error uploading ${filePath}:`, error);
     return null;
