@@ -35,7 +35,8 @@ async function uploadToS3(filePath, bucketName, region, accessKey, secretKey, en
     // ✅ Nếu IMG_NAME_WITH_AUTHOR = "true" thì mới thêm author
     let fileNameFinal;
     if (process.env.IMG_NAME_WITH_AUTHOR === "true") {
-      fileNameFinal = `${nameWithoutExt}-${process.env.META_AUTHOR || "unknown"}${fileExtension}`;
+      const shortAuthor = (process.env.META_AUTHOR || "unk").substring(0, 3);
+      fileNameFinal = `${nameWithoutExt}-${shortAuthor}${fileExtension}`;
     } else {
       fileNameFinal = fileName; // giữ nguyên tên gốc
     }
