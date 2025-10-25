@@ -3,7 +3,8 @@
  * - Đọc tất cả CSV trong folder inputs/
  * - Với cột `Images`: tải ảnh, thêm metadata, re-encode JPG 800x800, upload lên DO Spaces
  * - Thay cột `Images` bằng link mới, xuất ra folder outputs/ với hậu tố _output.csv
- * - Xử lý song song: limiter riêng cho sản phẩm và cho ảnh => tránh deadlock
+ * - Xuất từng đợt (batch) theo số lượng sản phẩm quy định qua EXPORT_BATCH_SIZE
+ * - Tên file xuất theo dạng _1-500, _501-1000, ...
  */
 
 const fs = require("fs");
@@ -31,7 +32,7 @@ if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
 if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
 if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
 
-// Concurrency (tách limiter)
+// Concurrency
 const CONCURRENCY_PRODUCTS = parseInt(
   process.env.CONCURRENCY_PRODUCTS || process.env.CONCURRENCY || "8",
   10
@@ -46,14 +47,18 @@ const LAT = parseFloat(process.env.META_LAT || "32.7688");
 const LNG = parseFloat(process.env.META_LNG || "-97.3093");
 const DAYS_AGO = parseInt(process.env.META_DAYS_AGO || "7", 10);
 const AUTHOR_DEFAULT = process.env.META_AUTHOR || "unknown-source.com";
+const IMG_NAME_WITH_AUTHOR = process.env.IMG_NAME_WITH_AUTHOR || false;
 
-// Spaces (S3-compatible)
+// Spaces config
 const BUCKET = process.env.S3_BUCKET;
 const REGION = process.env.S3_REGION;
 const ENDPOINT = process.env.S3_ENDPOINT;
 const ACCESS_KEY = process.env.S3_ACCESS_KEY;
 const SECRET_KEY = process.env.S3_SECRET_KEY;
 const S3_FOLDER = process.env.S3_FOLDER || "";
+
+// Batch export config
+const EXPORT_BATCH_SIZE = parseInt(process.env.EXPORT_BATCH_SIZE || "1000", 10);
 
 // ====== UTILS ======
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -65,14 +70,16 @@ const safeName = (s) =>
 const metadataMutex = new Mutex();
 
 async function downloadToTemp(url, baseName) {
-  console.log(`🖼️ Downloading image: ${url}`); // ✅ log URL ảnh đang tải
-  // const res = await fetch(url);
-  const res = await fetch(url, {
-    headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-      "Referer": url, // rất quan trọng, để CDN trả ảnh thật
-    },
-  });
+  console.log(`🖼️ Downloading image: ${url}`);
+  const headers =
+    url.includes("digitaloceanspaces.com") || url.includes("amazonaws.com")
+      ? {}
+      : {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        Referer: url,
+      };
+
+  const res = await fetch(url, { headers });
   if (!res.ok) throw new Error(`Download failed: ${url} -> ${res.status}`);
   const buf = await res.buffer();
   const ext = (path.extname(new URL(url).pathname) || ".jpg").split("?")[0];
@@ -82,13 +89,12 @@ async function downloadToTemp(url, baseName) {
 }
 
 async function reencode800jpg(inputPath, finalBaseName) {
-  const resizedBuffer = 
-  await sharp(inputPath)
+  const resizedBuffer = await sharp(inputPath)
     .resize({ width: 800, height: 800, fit: "inside" })
     .modulate({ brightness: 1.001 })
     .ensureAlpha()
     .toBuffer();
-  
+
   const meta = await sharp(resizedBuffer).metadata();
   const padX = Math.floor((800 - (meta.width || 800)) / 2);
   const padY = Math.floor((800 - (meta.height || 800)) / 2);
@@ -108,7 +114,6 @@ async function reencode800jpg(inputPath, finalBaseName) {
 
   return outPath;
 }
-
 
 async function setExif(filePath, { title, author, lat = LAT, lng = LNG, daysAgo = DAYS_AGO }) {
   const tags = (title || "").split(/\s+/).filter(Boolean);
@@ -132,8 +137,8 @@ async function setExif(filePath, { title, author, lat = LAT, lng = LNG, daysAgo 
       GPSLatitudeRef: lat >= 0 ? "N" : "S",
       GPSLongitude: Math.abs(lng),
       GPSLongitudeRef: lng >= 0 ? "E" : "W",
-      Make: `Photographer of ${author}`,
-      Model: `Model of ${author}`,
+      Make: `${author}`,
+      Model: `${author} Product Image`,
       Copyright: `© ${new Date().getFullYear()} ${author}`,
     });
   });
@@ -142,8 +147,7 @@ async function setExif(filePath, { title, author, lat = LAT, lng = LNG, daysAgo 
 function parseImageList(value) {
   if (!value) return [];
   return value
-    // .split(/[,|\n]+/) // Split bởi dấu phẩy ","
-    .split(/,\s+/) // Split bởi dấu phẩy và khoảng trắng ", "
+    .split(/,\s+/)
     .map((s) => s.trim())
     .filter((s) => /^https?:\/\//i.test(s));
 }
@@ -157,14 +161,15 @@ async function processOneImage(originalUrl, productTitle, indexInProduct = 0) {
 
   const cleanTitle = capitalizeWords(
     productTitle ||
-      path.basename(originalUrl).replace(/\.[^/.]+$/, "").replace(/[-_]+/g, " ")
+    path.basename(originalUrl).replace(/\.[^/.]+$/, "").replace(/[-_]+/g, " ")
   );
   const baseName = safeName(`${cleanTitle}_${indexInProduct + 1}`);
 
   const tempPath = await downloadToTemp(originalUrl, `${baseName}_raw`);
   const jpgPath = await reencode800jpg(tempPath, baseName);
-
-  try { fs.unlinkSync(tempPath); } catch {}
+  try {
+    fs.unlinkSync(tempPath);
+  } catch { }
 
   await setExif(jpgPath, { title: cleanTitle, author });
 
@@ -176,7 +181,7 @@ async function processOneImage(originalUrl, productTitle, indexInProduct = 0) {
     SECRET_KEY,
     ENDPOINT,
     S3_FOLDER,
-	author
+    author
   );
 
   if (!uploadedUrl) throw new Error(`Upload failed for ${jpgPath}`);
@@ -186,11 +191,6 @@ async function processOneImage(originalUrl, productTitle, indexInProduct = 0) {
 // ====== PROCESS CSV FILE ======
 async function processCsvFile(inputCsvPath) {
   const fileName = path.basename(inputCsvPath);
-  const outputCsvPath = path.join(
-    OUTPUT_DIR,
-    path.basename(fileName, path.extname(fileName)) + "_output.csv"
-  );
-
   console.log(`🚀 Processing: ${fileName}`);
 
   const raw = fs.readFileSync(inputCsvPath, "utf8");
@@ -201,7 +201,6 @@ async function processCsvFile(inputCsvPath) {
     return;
   }
 
-  // Header mapping mềm dẻo
   const headers = Object.keys(records[0]).reduce((map, key) => {
     map[key.toLowerCase().trim()] = key;
     return map;
@@ -214,19 +213,63 @@ async function processCsvFile(inputCsvPath) {
     return;
   }
 
-  // Tạo 2 limiter riêng
+  const successRows = [];
+  const failedRows = [];
+  let processedCount = 0;
+
+  async function exportChunkIfNeeded(force = false) {
+    if (successRows.length === 0 && failedRows.length === 0) return;
+
+    // Tính khoảng range file hiện tại
+    const start = Math.floor((processedCount - successRows.length - failedRows.length) / EXPORT_BATCH_SIZE) * EXPORT_BATCH_SIZE + 1;
+    const end = processedCount;
+
+    if (force || processedCount % EXPORT_BATCH_SIZE === 0) {
+      const rangeStart = start;
+      const rangeEnd = force ? processedCount : start + EXPORT_BATCH_SIZE - 1;
+      const shortAuthor = (process.env.META_AUTHOR || "unk").substring(0, 3);
+
+      const successFile = path.join(
+        OUTPUT_DIR,
+        `${path.basename(fileName, path.extname(fileName))}_${rangeStart}-${rangeEnd}_output-${shortAuthor}.csv`
+      );
+      const failFile = path.join(
+        OUTPUT_DIR,
+        `${path.basename(fileName, path.extname(fileName))}_${rangeStart}-${rangeEnd}_failed-${shortAuthor}.csv`
+      );
+
+      if (successRows.length > 0) {
+        const header = Object.keys(successRows[0]);
+        const csvOut = stringify(successRows, { header: true, columns: header });
+        fs.writeFileSync(successFile, csvOut, "utf8");
+        console.log(`💾 Exported ${rangeStart}-${rangeEnd} (${successRows.length} success) → ${successFile}`);
+        successRows.length = 0;
+      }
+
+      if (failedRows.length > 0) {
+        const header = Object.keys(failedRows[0]);
+        const csvFail = stringify(failedRows, { header: true, columns: header });
+        fs.writeFileSync(failFile, csvFail, "utf8");
+        console.warn(`⚠️ Exported ${rangeStart}-${rangeEnd} (${failedRows.length} failed) → ${failFile}`);
+        failedRows.length = 0;
+      }
+    }
+  }
+
   const limitProduct = pLimit(CONCURRENCY_PRODUCTS);
   const limitImage = pLimit(CONCURRENCY_IMAGES);
 
-  // Xử lý tất cả sản phẩm song song (giới hạn bởi CONCURRENCY_PRODUCTS)
   const tasks = records.map((row, i) =>
     limitProduct(async () => {
       const productTitle = String(row[titleCol] || "").trim();
       const imageUrls = parseImageList(row[imagesCol]);
 
       if (imageUrls.length === 0) {
-        console.warn(`[${fileName}] Row ${i + 1}: no valid image URL -> leaving Images empty`);
+        console.warn(`[${fileName}] Row ${i + 1}: no valid image URL -> mark as failed`);
         row[imagesCol] = "";
+        failedRows.push({ ...row, __error: "No valid image URL" });
+        processedCount++;
+        await exportChunkIfNeeded();
         return;
       }
 
@@ -234,41 +277,57 @@ async function processCsvFile(inputCsvPath) {
         `📦 [${fileName}] Row ${i + 1}/${records.length}: "${productTitle}" — ${imageUrls.length} image(s)`
       );
 
-      try {
-        // Ảnh cũng chạy song song nhưng dùng limiter khác (tránh deadlock)
-        const uploadedUrls = await Promise.all(
-          imageUrls.map((url, idx) => limitImage(() => processOneImage(url, productTitle, idx)))
-        );
-        row[imagesCol] = uploadedUrls.join(", ");
-      } catch (err) {
-        console.error(`Row ${i + 1} failed:`, err.message);
-        row[imagesCol] = "";
+      // try {
+      //   const uploadedUrls = await Promise.all(
+      //     imageUrls.map((url, idx) => limitImage(() => processOneImage(url, productTitle, idx)))
+      //   );
+      //   row[imagesCol] = uploadedUrls.join(",");
+      //   successRows.push(row);
+      // } catch (err) {
+      //   console.error(`❌ Row ${i + 1} failed: ${err.message}`);
+      //   row[imagesCol] = "";
+      //   failedRows.push({ ...row, __error: err.message });
+      // }
+
+      const uploadedUrls = [];
+
+      for (const [idx, url] of imageUrls.entries()) {
+        try {
+          const result = await limitImage(() => processOneImage(url, productTitle, idx));
+          uploadedUrls.push(result);
+        } catch (err) {
+          console.warn(`⚠️ Image ${idx + 1} failed for "${productTitle}": ${err.message}`);
+        }
       }
+
+      if (uploadedUrls.length > 0) {
+        row[imagesCol] = uploadedUrls.join(",");
+        successRows.push(row);
+      } else {
+        console.error(`❌ All images failed for "${productTitle}"`);
+        row[imagesCol] = "";
+        failedRows.push({ ...row, __error: "All images failed" });
+      }
+
+      processedCount++;
+      await exportChunkIfNeeded();
     })
   );
 
   await Promise.all(tasks);
-
-  const header = Object.keys(records[0]);
-  const csvOut = stringify(records, { header: true, columns: header });
-  fs.writeFileSync(outputCsvPath, csvOut, "utf8");
-
-  console.log(`✅ Done. Wrote: ${outputCsvPath}`);
+  await exportChunkIfNeeded(true);
+  console.log(`✅ Finished ${fileName}`);
 }
 
 // ====== MAIN ======
 async function run() {
-  const csvFiles = fs
-    .readdirSync(INPUT_DIR)
-    .filter((f) => f.toLowerCase().endsWith(".csv"));
+  const csvFiles = fs.readdirSync(INPUT_DIR).filter((f) => f.toLowerCase().endsWith(".csv"));
 
   if (!csvFiles.length) {
     console.error("❌ No CSV files found in inputs/ folder.");
     process.exit(1);
   }
 
-  // Xử lý từng file CSV lần lượt (giữ log gọn). Muốn chạy song song file level,
-  // có thể dùng p-limit thêm một limiter thứ 3.
   for (const file of csvFiles) {
     const fullPath = path.join(INPUT_DIR, file);
     try {
@@ -283,6 +342,8 @@ async function run() {
 
 run().catch(async (e) => {
   console.error(e);
-  try { await exiftool.end(); } catch {}
+  try {
+    await exiftool.end();
+  } catch { }
   process.exit(1);
 });
