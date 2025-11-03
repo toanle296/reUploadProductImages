@@ -19,7 +19,8 @@ const { Mutex } = require("async-mutex");
 require("dotenv").config();
 
 const pLimit = require("p-limit").default;
-const { uploadToS3 } = require("./upload");
+// const { uploadToS3 } = require("./upload");
+const { uploadAuto } = require("./upload");
 
 // ====== CONFIG ======
 const INPUT_DIR = path.resolve("./inputs");
@@ -41,6 +42,7 @@ const CONCURRENCY_IMAGES = parseInt(
   process.env.CONCURRENCY_IMAGES || process.env.CONCURRENCY || "8",
   10
 );
+const RANDOM_SKU_ENABLED = (process.env.RANDOM_SKU_ENABLED || "false").toLowerCase() === "true";
 
 // Metadata defaults
 const LAT = parseFloat(process.env.META_LAT || "32.7688");
@@ -173,7 +175,7 @@ async function processOneImage(originalUrl, productTitle, indexInProduct = 0) {
 
   await setExif(jpgPath, { title: cleanTitle, author });
 
-  const uploadedUrl = await uploadToS3(
+  const uploadedUrl = await uploadAuto(
     jpgPath,
     BUCKET,
     REGION,
@@ -263,6 +265,10 @@ async function processCsvFile(inputCsvPath) {
     limitProduct(async () => {
       const productTitle = String(row[titleCol] || "").trim();
       const imageUrls = parseImageList(row[imagesCol]);
+      if (RANDOM_SKU_ENABLED) {
+        const randomSku = `SKU-${String(i + 1).padStart(4, "0")}-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+        row["SKU"] = randomSku;
+      }
 
       if (imageUrls.length === 0) {
         console.warn(`[${fileName}] Row ${i + 1}: no valid image URL -> mark as failed`);
@@ -301,7 +307,7 @@ async function processCsvFile(inputCsvPath) {
       }
 
       if (uploadedUrls.length > 0) {
-        row[imagesCol] = uploadedUrls.join(",");
+        row[imagesCol] = uploadedUrls.join(", ");
         successRows.push(row);
       } else {
         console.error(`❌ All images failed for "${productTitle}"`);
